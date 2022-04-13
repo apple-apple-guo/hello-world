@@ -1,0 +1,65 @@
+def REGISTRY = "192.168.235.131:5000"
+ def PROJECT = "summer_java"
+ def IMAGE = "${REGISTRY}/${PROJECT}:${Tag}"
+ def GIT_ADDRESS = "http://192.168.235.130:8081/littlebird/ospp-java.git"
+ def GIT_AUTH ="f036fdfa-4d33-4cb4-9956-f6cfd540e0f1"
+ def MYSQL_IP = "192.168.235.132"
+ def MYSQL_PORT= "3306"
+ def MYSQL_USER="root"
+ def MYSQL_PASSWORD="123456"
+ def MYSQL_DATABASE ="summer"
+ def REDIS_IP="192.168.235.132"
+ def REDIS_PORT ="6379"
+ def REDIS_PASSWORD ="123456"
+ def PULISHSERVER_CONFIG="192.168.235.132_testserver"
+ def SUMMER_JAVA_IP="192.168.235.132"
+ def SUMMER_JAVA_PORT="8080"
+
+pipeline{
+    agent any
+    parameters{
+      string(name:'Branch',defaultValue:'*/main',description:'please give a branch')
+      string(name:'Tag',defaultValue:'1.0',description:'please give a tag')
+    }
+    stages{
+        stage("拉取代码"){
+            steps{
+                // sh '''
+                //     #!/bin/bash
+                //     rm -rf *;
+                // '''
+                checkout([$class: 'GitSCM', branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[credentialsId: "${GIT_AUTH}", url: "${GIT_ADDRESS}"]]])
+            }
+        }
+        stage("代码编译"){
+            steps{
+                withEnv(['JAVA_HOME=/usr/local/jdk-11.0.13']){
+                  sh 'cd summer;/usr/local/apache-maven-3.8.3/bin/mvn -e clean package -U -Dmaven.test.skip=true -Ptest'  
+                 }
+            }
+        }
+        stage("构建镜像"){
+            steps{
+                sh """
+                  echo \'
+                  FROM openjdk:11.0
+                  MAINTAINER apple
+                  WORKDIR /opt
+                 RUN cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo "Asia/shanghai" >> /etc/timezone
+                 COPY summer/summer-admin/target/summer-admin.jar .
+                 CMD ["java","-jar","summer-admin.jar"]
+                 EXPOSE 80
+                 \' > Dockerfile;
+                docker build --no-cache -t  ${IMAGE} .;
+                docker push ${IMAGE};
+                docker images | grep ${PROJECT}| awk '{print \$3}' | xargs docker rmi -f;
+                """             
+            }
+        }
+        stage("部署环境"){
+            steps{
+                 sshPublisher(publishers: [sshPublisherDesc(configName: "${PULISHSERVER_CONFIG}", transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: "docker ps -a |grep ${PROJECT} |awk '{print \$1}' |xargs docker rm -f; docker images |grep ${PROJECT} |awk '{print \$3}' |xargs docker rmi -f;docker pull ${IMAGE};docker run -d -p ${SUMMER_JAVA_PORT}:80 -e MYSQL_IP=${MYSQL_IP} -e MYSQL_PORT=${MYSQL_PORT} -e MYSQL_USER=${MYSQL_USER} -e MYSQL_PASSWORD=${MYSQL_PASSWORD} -e MYSQL_DATABASE=${MYSQL_DATABASE} -e REDIS_IP=${REDIS_IP}  -e REDIS_PORT=${REDIS_PORT} -e REDIS_PASSWORD=${REDIS_PASSWORD}  --privileged=true --restart=always --name  ${PROJECT}  ${IMAGE};ps -ef |grep java", execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: true)])    
+           }
+        }
+    }
+}
